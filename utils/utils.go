@@ -1,4 +1,4 @@
-package mvcc
+package utils
 
 import (
 	"fmt"
@@ -6,13 +6,13 @@ import (
 	"slices"
 )
 
-func assert(b bool, msg string) {
+func Assert(b bool, msg string) {
 	if !b {
 		panic(msg)
 	}
 }
 
-func assertEq[C comparable](a C, b C, prefix string) {
+func AssertEq[C comparable](a C, b C, prefix string) {
 	if a != b {
 		panic(fmt.Sprintf("%s '%v' != '%v'", prefix, a, b))
 	}
@@ -20,7 +20,7 @@ func assertEq[C comparable](a C, b C, prefix string) {
 
 var DEBUG = slices.Contains(os.Args, "--debug")
 
-func debug(a ...any) {
+func Debug(a ...any) {
 	if !DEBUG {
 		return
 	}

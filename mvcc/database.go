@@ -2,6 +2,8 @@ package mvcc
 
 import (
 	"github.com/tidwall/btree"
+
+	"github.com/mukeshjc/mvcc-isolation/v2/utils"
 )
 
 type Database struct {
@@ -18,14 +20,21 @@ type Database struct {
 // Note: To be thread-safe: store, transactions, and nextTransactionId should be guarded by a mutex.
 //
 //	But to keep the code small, this iteration will not use goroutines and thus does not need mutexes.
-func NewDatabase() Database {
+func NewDatabase(isolationLevel IsolationLevel) Database {
 	return Database{
-		defaultIsolation: ReadCommittedIsolation,
+		defaultIsolation: isolationLevel,
 		store:            map[string][]Value{},
-		// The `0` transaction id will be used to mean that
+		// the `0` transaction id will be used to mean that
 		// the id was not set. So all valid transaction ids
 		// must start at 1.
 		nextTransactionId: 1,
+	}
+}
+
+func (d *Database) NewConnection() *Connection {
+	return &Connection{
+		db: d,
+		tx: nil,
 	}
 }
 
@@ -55,16 +64,16 @@ func (d *Database) newTransaction() *Transaction {
 	// Add this transaction to history.
 	d.transactions.Set(t.id, t)
 
-	debug("starting transaction", t.id)
+	utils.Debug("starting transaction", t.id)
 
 	return &t
 }
 
 // few more helpers for completing a transaction, for fetching a transaction by id, and for validating a transaction.
 func (d *Database) completeTransaction(t *Transaction, state TransactionState) error {
-	debug("completing transaction ", t.id)
+	utils.Debug("completing transaction ", t.id)
 
-	// Update transactions.
+	// update transactions.
 	t.state = state
 	d.transactions.Set(t.id, *t)
 
@@ -73,11 +82,23 @@ func (d *Database) completeTransaction(t *Transaction, state TransactionState) e
 
 func (d *Database) transactionState(txId uint64) Transaction {
 	t, ok := d.transactions.Get(txId)
-	assert(ok, "valid transaction")
+	utils.Assert(ok, "valid transaction")
 	return t
 }
 
 func (d *Database) assertValidTransaction(t *Transaction) {
-	assert(t.id > 0, "valid id")
-	assert(d.transactionState(t.id).state == InProgressTransaction, "in progress")
+	utils.Assert(t.id > 0, "valid id")
+	utils.Assert(d.transactionState(t.id).state == InProgressTransaction, "in progress")
+}
+
+func (d *Database) isVisible(t *Transaction, value Value) bool {
+	// ReadUncommitted, has almost no restrictions. we can merely read the most recent (non-deleted) version of a value,
+	// regardless of if the transaction that set it has committed or aborted or not.
+	if t.isolation == ReadUncommittedIsolation {
+		// we must merely make sure the value hasn't been deleted, that's all
+		return value.txEndId == 0 // txEndId is not set, indicating the value hasn't been deleted by any tx
+	}
+
+	utils.Assert(false, "unsupported isolation level")
+	return false
 }
