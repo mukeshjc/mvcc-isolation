@@ -93,10 +93,42 @@ func (d *Database) assertValidTransaction(t *Transaction) {
 
 func (d *Database) isVisible(t *Transaction, value Value) bool {
 	// ReadUncommitted, has almost no restrictions. we can merely read the most recent (non-deleted) version of a value,
-	// regardless of if the transaction that set it has committed or aborted or not.
+	// regardless of if the transaction that set it has committed or rolledback or not.
+	// https://jepsen.io/consistency/models/read-uncommitted
 	if t.isolation == ReadUncommittedIsolation {
 		// we must merely make sure the value hasn't been deleted, that's all
 		return value.txEndId == 0 // txEndId is not set, indicating the value hasn't been deleted by any tx
+	}
+
+	// we'll make sure that the value has a txStartId that is either this transaction or a transaction that has committed.
+	// Moreover we will now begin checking against txEndId to make sure the value wasn't deleted by any relevant transaction.
+	// this is useful and hence is the default isolation level for many databases including Postgres, Yugabyte, Oracle, and SQL Server
+	// https://jepsen.io/consistency/models/read-committed
+	if t.isolation == ReadCommittedIsolation {
+		// If the value wasn't created by current transaction and the other transaction that created it isn't committed yet, then it's no good.
+		if value.txStartId != t.id && d.transactionState(value.txStartId).state != CommittedTransaction {
+			return false
+		}
+
+		// If the value was deleted ...
+		if value.txEndId > 0 {
+			// ... in the current transaction, then it's no good
+			if value.txEndId == t.id {
+				return false
+			}
+
+			// ... by other transaction and it is committed, then it's no good.
+			if value.txEndId > 0 && d.transactionState(value.txEndId).state == CommittedTransaction {
+				return false
+			}
+		}
+
+		// now the value is useable. It's either created in current transaction or was created by other transaction that has committed
+		return true
+
+		// Even with this isolation level, you can easily get inconsistent data within a transaction at this isolation level.
+		// If the transaction A has multiple statements it can see different results per statement, even if the transaction A did not modify data.
+		// Another transaction B may have committed changes between two statements in this transaction A.
 	}
 
 	utils.Assert(false, "unsupported isolation level")

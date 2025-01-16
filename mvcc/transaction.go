@@ -4,12 +4,12 @@ import (
 	"github.com/tidwall/btree"
 )
 
-// transaction will be in an in-progress, aborted, or committed state.
+// transaction will be in an in-progress, rolledback, or committed state.
 type TransactionState uint8
 
 const (
 	InProgressTransaction TransactionState = iota
-	AbortedTransaction
+	RolledBackTransaction
 	CommittedTransaction
 )
 

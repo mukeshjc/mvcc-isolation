@@ -16,7 +16,7 @@ type Connection struct {
 func (c *Connection) ExecCommand(command string, args []string) (string, error) {
 	utils.Debug(command, args)
 
-	// neat thing about MVCC is that beginning, committing, and aborting a transaction is metadata work.
+	// neat thing about MVCC is that beginning, committing, and rollingback a transaction is metadata work.
 	// it will not involve modifying any values we get, set, or delete.
 
 	// begin a transaction, we ask the database for a new transaction and assign it to the current connection.
@@ -27,11 +27,11 @@ func (c *Connection) ExecCommand(command string, args []string) (string, error) 
 		return fmt.Sprintf("%d", c.tx.id), nil
 	}
 
-	// abort/commit a transaction, we call the completeTransaction method (which makes sure the database transaction history gets updated)
-	// with the AbortedTransaction/CommittedTransaction state.
+	// rolback/commit a transaction, we call the completeTransaction method (which makes sure the database transaction history gets updated)
+	// with the RolledBackTransaction/CommittedTransaction state.
 	if command == "rollback" {
 		c.db.assertValidTransaction(c.tx)
-		err := c.db.completeTransaction(c.tx, AbortedTransaction)
+		err := c.db.completeTransaction(c.tx, RolledBackTransaction)
 		c.tx = nil
 		return "", err
 	}
