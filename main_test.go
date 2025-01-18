@@ -200,3 +200,30 @@ func TestSnapshotIsolation(t *testing.T) {
 	c3.MustExecCommand("set", []string{"y", "no conflict"})
 	c3.MustExecCommand("commit", nil)
 }
+
+func TestSerializableIsolation(t *testing.T) {
+	database := mvcc.NewDatabase(mvcc.SerializableIsolation)
+
+	c1 := database.NewConnection()
+	c1.MustExecCommand("begin", nil)
+
+	c2 := database.NewConnection()
+	c2.MustExecCommand("begin", nil)
+
+	c3 := database.NewConnection()
+	c3.MustExecCommand("begin", nil)
+
+	c1.MustExecCommand("set", []string{"x", "hey"})
+	c1.MustExecCommand("commit", nil)
+
+	_, err := c2.ExecCommand("get", []string{"x"})
+	utils.AssertEq(err.Error(), "cannot get key that doesn't exist", "c5 get x")
+
+	res, err := c2.ExecCommand("commit", nil)
+	utils.AssertEq(res, "", "c2 commit")
+	utils.AssertEq(err.Error(), "read-write or write-write conflict", "c2 commit")
+
+	// But unrelated keys cause no conflict.
+	c3.MustExecCommand("set", []string{"y", "no conflict"})
+	c3.MustExecCommand("commit", nil)
+}

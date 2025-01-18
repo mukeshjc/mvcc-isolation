@@ -76,13 +76,34 @@ func (d *Database) completeTransaction(t *Transaction, state TransactionState) e
 	utils.Debug("completing transaction ", t.id)
 
 	if state == CommittedTransaction {
+		// Snapshot Isolation
+		// In a snapshot isolated system, each transaction appears to operate on an independent, consistent snapshot of the database.
+		// Its changes are visible only to that transaction until commit time, when all changes become visible atomically to any transaction which begins at a later time.
+		// If transaction T1 has modified an object x, and another transaction T2 committed a write to x after T1’s snapshot began, and before T1’s commit, then T1 must abort.
 		// Snapshot Isolation is the same as Repeatable Read but with one additional rule: the keys written by any two concurrent committed transactions must not overlap.
+		// https://jepsen.io/consistency/models/snapshot-isolation
 		if t.isolation == SnapshotIsolation {
 			if d.hasConflict(t, func(t1 *Transaction, t2 *Transaction) bool {
 				return setsShareKeys(t1.writeset, t2.writeset)
 			}) {
 				d.completeTransaction(t, RolledBackTransaction)
 				return fmt.Errorf("write-write conflict")
+			}
+		}
+
+		// Serializable Isolation
+		// In terms of end-result, this is the simplest isolation level to reason about. Serializable Isolation must appear as if only a single transaction were executing at a time.
+		// Some systems, like SQLite and TigerBeetle, do Actually Serial Execution where only one transaction runs at a time.
+		// But few databases implement Serializable like this because it removes a number of fair concurrent execution histories. For example, two concurrent read-only transactions.
+		// Postgres implements serializability via Serializable Snapshot Isolation. MySQL implements serializability via Two-Phase Locking.
+		// FoundationDB implements serializability via sequential timestamp assignment and conflict detection.
+		// https://jepsen.io/consistency/models/serializable
+		if t.isolation == SerializableIsolation {
+			if d.hasConflict(t, func(t1 *Transaction, t2 *Transaction) bool {
+				return setsShareKeys(t1.readset, t2.writeset) || setsShareKeys(t1.writeset, t2.readset) || setsShareKeys(t1.writeset, t2.writeset)
+			}) {
+				d.completeTransaction(t, RolledBackTransaction)
+				return fmt.Errorf("read-write or write-write conflict")
 			}
 		}
 	}
@@ -190,14 +211,6 @@ func (d *Database) isVisible(t *Transaction, value Value) bool {
 
 	return true
 }
-
-// In a snapshot isolated system, each transaction appears to operate on an independent, consistent snapshot of the database.
-// Its changes are visible only to that transaction until commit time, when all changes become visible atomically to any transaction which begins at a later time.
-// If transaction T1 has modified an object x, and another transaction T2 committed a write to x after T1’s snapshot began, and before T1’s commit, then T1 must abort.
-// Snapshot Isolation is the same as Repeatable Read but with one additional rule: the keys written by any two concurrent committed transactions must not overlap.
-// https://jepsen.io/consistency/models/snapshot-isolation
-
-// when a transaction A goes to commit, it will run a conflict test for any transaction B that has committed since this transaction A started to check for clashes in the keys written
 
 // a helper for iterating through all relevant transactions, running a check function for any transaction that has committed.
 func (d *Database) hasConflict(t1 *Transaction, conflictFn func(*Transaction, *Transaction) bool) bool {
