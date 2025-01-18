@@ -117,8 +117,8 @@ func (d *Database) isVisible(t *Transaction, value Value) bool {
 				return false
 			}
 
-			// ... by other transaction and it is committed, then it's no good.
-			if value.txEndId > 0 && d.transactionState(value.txEndId).state == CommittedTransaction {
+			// ... by other transaction that is committed, then it's no good.
+			if d.transactionState(value.txEndId).state == CommittedTransaction {
 				return false
 			}
 		}
@@ -131,6 +131,47 @@ func (d *Database) isVisible(t *Transaction, value Value) bool {
 		// Another transaction B may have committed changes between two statements in this transaction A.
 	}
 
-	utils.Assert(false, "unsupported isolation level")
-	return false
+	// Repeatable Read, Snapshot Isolation and Serializable further restricts Read Committed so only versions from transactions that completed before this one started are 	visible.
+	// we will add additional checks for the Read Committed logic that make sure the value was not created and not deleted within a transaction that started before this transaction started.
+	// As it happens, this is the same logic that will be necessary for Snapshot Isolation and Serializable Isolation.
+	// The additional logic (that makes Snapshot Isolation and Serializable Isolation different) happens at commit time.
+
+	utils.Assert(t.isolation == RepeatableReadIsolation || t.isolation == SnapshotIsolation || t.isolation == SerializableIsolation, "unsupported isolation level")
+
+	////// now the specifics for a RepeatableReadIsolation level and above, rest of the checks for stricter isolation levels happens at Commit Time.
+
+	// ignore values from transactions started after the current one
+	if value.txStartId > t.id {
+		return false
+	}
+
+	// ignore values created from transactions in-progress i.e. ongoing when this transaction began but may have committed when this transaction was in progress.
+	// if we didn't check for this, then our current transaction may have performed some reads at the beginning, then an in-progress transaction committed and if we made
+	// another read, we might see the values because now that would be a committed transaction as per ReadCommittedIsolation level. Thus it would be a dirty read and violate
+	// RepeatableReadIsolation guarantee.
+	if t.inprogress.Contains(value.txStartId) {
+		return false
+	}
+
+	////// a copy of all checks we did for ReadUncommittedIsolation is below with slight **MODIFICATION** to the second statement in the bigger IF block
+
+	// If the value wasn't created by current transaction and the other transaction that created it isn't committed yet, then it's no good.
+	if value.txStartId != t.id && d.transactionState(value.txStartId).state != CommittedTransaction {
+		return false
+	}
+
+	// If the value was deleted ...
+	if value.txEndId > 0 {
+		// ... in the current transaction, then it's no good
+		if value.txEndId == t.id {
+			return false
+		}
+
+		// ... by other transaction **that began before the current one** and it is committed, then it's no good.
+		if value.txEndId < t.id && d.transactionState(value.txEndId).state == CommittedTransaction {
+			return false
+		}
+	}
+
+	return true
 }

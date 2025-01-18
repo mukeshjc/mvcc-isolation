@@ -101,3 +101,74 @@ func TestReadCommitted(t *testing.T) {
 	utils.AssertEq(res, "", "c4 get x")
 	utils.AssertEq(err.Error(), "cannot get key that doesn't exist", "c4 get x")
 }
+
+func TestRepeatableRead(t *testing.T) {
+	database := mvcc.NewDatabase(mvcc.RepeatableReadIsolation)
+
+	c1 := database.NewConnection()
+	c1.MustExecCommand("begin", nil)
+
+	c2 := database.NewConnection()
+	c2.MustExecCommand("begin", nil)
+
+	// local change is visible locally
+	c1.MustExecCommand("set", []string{"x", "hey"})
+	res := c1.MustExecCommand("get", []string{"x"})
+	utils.AssertEq(res, "hey", "c1 get x")
+
+	// update not available to this transaction since it is not committed
+	res, err := c2.ExecCommand("get", []string{"x"})
+	utils.AssertEq(res, "", "c2 get x")
+	utils.AssertEq(err.Error(), "cannot get key that doesn't exist", "c2 get x")
+
+	c1.MustExecCommand("commit", nil)
+
+	// even after committing the update isn't visible because c1 was in-progress when c2 began
+	res, err = c2.ExecCommand("get", []string{"x"})
+	utils.AssertEq(res, "", "c2 get x")
+	utils.AssertEq(err.Error(), "cannot get key that doesn't exist", "c2 get x")
+
+	// but is available in a new transaction
+	c3 := database.NewConnection()
+	c3.MustExecCommand("begin", nil)
+
+	res = c3.MustExecCommand("get", []string{"x"})
+	utils.AssertEq(res, "hey", "c3 get x")
+
+	// local change is visible locally
+	c3.MustExecCommand("set", []string{"x", "yall"})
+	res = c3.MustExecCommand("get", []string{"x"})
+	utils.AssertEq(res, "yall", "c3 get x")
+
+	// But not on the other connection, again.
+	res, err = c2.ExecCommand("get", []string{"x"})
+	utils.AssertEq(res, "", "c2 get x")
+	utils.AssertEq(err.Error(), "cannot get key that doesn't exist", "c2 get x")
+
+	c3.MustExecCommand("rollback", nil)
+
+	// And still not, regardless of rollback, because it's an older
+	// transaction.
+	res, err = c2.ExecCommand("get", []string{"x"})
+	utils.AssertEq(res, "", "c2 get x")
+	utils.AssertEq(err.Error(), "cannot get key that doesn't exist", "c2 get x")
+
+	// And again the rollbacked set is still not on a new transaction.
+	c4 := database.NewConnection()
+	c4.MustExecCommand("begin", nil)
+
+	res = c4.MustExecCommand("get", []string{"x"})
+	utils.AssertEq(res, "hey", "c4 get x")
+
+	c4.MustExecCommand("delete", []string{"x"})
+	c4.MustExecCommand("commit", nil)
+
+	// But the delete is visible to new transactions now that this
+	// has been committed.
+	c5 := database.NewConnection()
+	c5.MustExecCommand("begin", nil)
+
+	res, err = c5.ExecCommand("get", []string{"x"})
+	utils.AssertEq(res, "", "c5 get x")
+	utils.AssertEq(err.Error(), "cannot get key that doesn't exist", "c5 get x")
+}
