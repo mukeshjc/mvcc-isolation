@@ -1,6 +1,8 @@
 package mvcc
 
 import (
+	"fmt"
+
 	"github.com/tidwall/btree"
 
 	"github.com/mukeshjc/mvcc-isolation/v2/utils"
@@ -73,6 +75,18 @@ func (d *Database) newTransaction() *Transaction {
 func (d *Database) completeTransaction(t *Transaction, state TransactionState) error {
 	utils.Debug("completing transaction ", t.id)
 
+	if state == CommittedTransaction {
+		// Snapshot Isolation is the same as Repeatable Read but with one additional rule: the keys written by any two concurrent committed transactions must not overlap.
+		if t.isolation == SnapshotIsolation {
+			if d.hasConflict(t, func(t1 *Transaction, t2 *Transaction) bool {
+				return setsShareKeys(t1.writeset, t2.writeset)
+			}) {
+				d.completeTransaction(t, RolledBackTransaction)
+				return fmt.Errorf("write-write conflict")
+			}
+		}
+	}
+
 	// update transactions.
 	t.state = state
 	d.transactions.Set(t.id, *t)
@@ -133,6 +147,7 @@ func (d *Database) isVisible(t *Transaction, value Value) bool {
 
 	// Repeatable Read, Snapshot Isolation and Serializable further restricts Read Committed so only versions from transactions that completed before this one started are 	visible.
 	// we will add additional checks for the Read Committed logic that make sure the value was not created and not deleted within a transaction that started before this transaction started.
+	// https://jepsen.io/consistency/models/repeatable-read
 	// As it happens, this is the same logic that will be necessary for Snapshot Isolation and Serializable Isolation.
 	// The additional logic (that makes Snapshot Isolation and Serializable Isolation different) happens at commit time.
 
@@ -174,4 +189,64 @@ func (d *Database) isVisible(t *Transaction, value Value) bool {
 	}
 
 	return true
+}
+
+// In a snapshot isolated system, each transaction appears to operate on an independent, consistent snapshot of the database.
+// Its changes are visible only to that transaction until commit time, when all changes become visible atomically to any transaction which begins at a later time.
+// If transaction T1 has modified an object x, and another transaction T2 committed a write to x after T1’s snapshot began, and before T1’s commit, then T1 must abort.
+// Snapshot Isolation is the same as Repeatable Read but with one additional rule: the keys written by any two concurrent committed transactions must not overlap.
+// https://jepsen.io/consistency/models/snapshot-isolation
+
+// when a transaction A goes to commit, it will run a conflict test for any transaction B that has committed since this transaction A started to check for clashes in the keys written
+
+// a helper for iterating through all relevant transactions, running a check function for any transaction that has committed.
+func (d *Database) hasConflict(t1 *Transaction, conflictFn func(*Transaction, *Transaction) bool) bool {
+	iter := d.transactions.Iter()
+
+	// first see if there is any conflict with transactions that were in progress when this one started.
+	inprogressIter := t1.inprogress.Iter()
+	for ok := inprogressIter.First(); ok; ok = inprogressIter.Next() {
+		id := inprogressIter.Key()
+		found := iter.Seek(id)
+		if !found {
+			continue
+		}
+		t2 := iter.Value()
+		if t2.state == CommittedTransaction {
+			if conflictFn(t1, &t2) {
+				return true
+			}
+		}
+	}
+
+	// then see if there is any conflict with transactions that started and committed after this one started.
+	for id := t1.id; id < d.nextTransactionId; id++ {
+		found := iter.Seek(id)
+		if !found {
+			continue
+		}
+		t2 := iter.Value()
+		if t2.state == CommittedTransaction {
+			if conflictFn(t1, &t2) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func setsShareKeys(s1 btree.Set[string], s2 btree.Set[string]) bool {
+	s1Iter := s1.Iter()
+	s2Iter := s2.Iter()
+
+	for ok := s1Iter.First(); ok; ok = s1Iter.Next() {
+		s1Key := s1Iter.Key()
+		found := s2Iter.Seek(s1Key)
+		if found {
+			return true
+		}
+	}
+
+	return false
 }

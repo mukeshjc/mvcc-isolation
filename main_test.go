@@ -172,3 +172,31 @@ func TestRepeatableRead(t *testing.T) {
 	utils.AssertEq(res, "", "c5 get x")
 	utils.AssertEq(err.Error(), "cannot get key that doesn't exist", "c5 get x")
 }
+
+// Snapshot Isolation shares all the same visibility rules as Repeatable Read, the tests get to be a little simpler!
+// We'll simply test that two transactions attempting to commit a write to the same key fail. Or specifically: that the second transaction cannot commit.
+func TestSnapshotIsolation(t *testing.T) {
+	database := mvcc.NewDatabase(mvcc.SnapshotIsolation)
+
+	c1 := database.NewConnection()
+	c1.MustExecCommand("begin", nil)
+
+	c2 := database.NewConnection()
+	c2.MustExecCommand("begin", nil)
+
+	c3 := database.NewConnection()
+	c3.MustExecCommand("begin", nil)
+
+	c1.MustExecCommand("set", []string{"x", "hey"})
+	c1.MustExecCommand("commit", nil)
+
+	c2.MustExecCommand("set", []string{"x", "hey"})
+
+	res, err := c2.ExecCommand("commit", nil)
+	utils.AssertEq(res, "", "c2 commit")
+	utils.AssertEq(err.Error(), "write-write conflict", "c2 commit")
+
+	// But unrelated keys cause no conflict.
+	c3.MustExecCommand("set", []string{"y", "no conflict"})
+	c3.MustExecCommand("commit", nil)
+}
